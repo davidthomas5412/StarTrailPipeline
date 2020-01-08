@@ -184,11 +184,15 @@ class CCD(Box):
 
     @lazy_property
     def image(self):
-        return self.hdu.data
+        return self.hdu.data.T
 
     @lazy_property
     def header(self):
         return self.hdu.header
+
+    def plot(self):
+        # TODO: implement
+        raise NotImplementedError()
 
     def pix2World(self, pixX, pixY):
         if self.wcs is None:

@@ -8,6 +8,9 @@ from copy import deepcopy
 from astropy.wcs import WCS
 from astropy.table import Table
 
+PIX2DEG = 0.263 / 60 / 60
+NUMCCDS = 61
+
 def conv(a,b):
     return np.real(ifft2(fft2(b) * fft2(a)))
 
@@ -16,7 +19,6 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     exp = seq.exposures[expInd]
     ccd = exp.ccds[ccdInd]
     reg = np.loadtxt(f'{registration_dir}merged_{int(seq.seconds)}.csv', skiprows=1, delimiter=',')
-    reg = reg[reg[:,3] > 20000] # flux threshold
 
     if seqInd == 1:
         expToGuess = {
@@ -41,20 +43,20 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
             3: 3 * 0.1693115234375,
             4: 4 * 0.1693115234375
         }
-    totRA = expToGuess[expInd]
-    totDEC = 0
+    guessRA = expToGuess[expInd]
+    guessDEC = 0
 
     h = deepcopy(seq.exposures[0].ccds[ccdInd].header)
     for key in ['CRVAL1', 'CENRA1', 'COR1RA1', 'COR2RA1', 'COR3RA1', 'COR4RA1']:
-        h[key] += totRA
+        h[key] += guessRA
     
     for key in ['CRVAL2', 'CENDEC1', 'COR1DEC1', 'COR2DEC1', 'COR3DEC1', 'COR4DEC1']:
-        h[key] += totDEC
+        h[key] += guessDEC
 
     raBufferPix = 900
     decBufferPix = 100
-    raBuffer = raBufferPix * 0.263 / 60 / 60
-    decBuffer = decBufferPix * 0.263 / 60 / 60
+    raBuffer = raBufferPix * PIX2DEG
+    decBuffer = decBufferPix * PIX2DEG
         
     maxRA = max([h[x] for x in ['COR{}RA1'.format(y) for y in range(1,5)]])
     minRA = min([h[x] for x in ['COR{}RA1'.format(y) for y in range(1,5)]])
@@ -64,37 +66,43 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     mask = (reg[:,1] > minRA - raBuffer) * (reg[:,1] < maxRA + raBuffer) *\
         (reg[:,2] > minDec - decBuffer) * (reg[:,2] < maxDec + decBuffer)
     clip = reg[mask]
+    clip = clip[np.argsort(clip[:,3])][-20:] # 20 brightest
 
     wcs = WCS(h)
     pix = wcs.all_world2pix(np.array([clip[:,1], clip[:,2]]).T, 1)
-    
-    orig = ccd.image
+
+    orig = ccd.image - ccd.header['AVSKY']
     n,m = orig.shape
-    ext = np.zeros((n+2*decBufferPix, m+2*raBufferPix))
-    base = np.zeros((n+2*decBufferPix, m+2*raBufferPix))
-    base2 = np.zeros((n+2*decBufferPix, m+2*raBufferPix))
-    kernel = np.zeros((n+2*decBufferPix, m+2*raBufferPix))
-    xcent = kernel.shape[0] // 2 + decBufferPix
-    ycent = kernel.shape[1] // 2 + raBufferPix
-    xcent=0
-    ycent=0
-    kernel[xcent+decBufferPix:xcent+20+decBufferPix, ycent+raBufferPix:ycent+800+raBufferPix] = 1
-    for x,y in pix.astype('int'):
-        if 0 <= y+decBufferPix < n+2*decBufferPix and 0 <= x+raBufferPix < m+2*raBufferPix :
-            base[y+decBufferPix,x+raBufferPix] = 1
-        
-    ext[decBufferPix:-decBufferPix, raBufferPix:-raBufferPix] = orig
+    ext = np.zeros((n+2*raBufferPix, m+2*decBufferPix))
+    base = np.zeros((n+2*raBufferPix, m+2*decBufferPix))
+    base2 = np.zeros((n+2*raBufferPix, m+2*decBufferPix))
+    kernel = np.zeros((n+2*raBufferPix, m+2*decBufferPix))
+    xcent = kernel.shape[0] // 2
+    ycent = kernel.shape[1] // 2    
     
+    trail_length = int(np.cos(seq.centDEC * np.pi / 180) * exp.header['EXPTIME'] * 15 / 0.263) + 1
+    trail_width = 20
+    kernel[xcent:xcent+trail_length, ycent:ycent+trail_width] = 1
+    for y,x in pix.astype('int'):
+        if 0 <= y+decBufferPix < m+2*decBufferPix and 0 <= x+raBufferPix < n+2*raBufferPix :
+            base[x+raBufferPix, y+decBufferPix] = 1
+    
+    ext[raBufferPix:-raBufferPix, decBufferPix:-decBufferPix] = orig
+
     res = conv(base, kernel)
-    res = np.roll(np.roll(res, -raBufferPix, axis=1), -decBufferPix, axis=0)
-    res = res[decBufferPix:-decBufferPix,raBufferPix:-raBufferPix]
-    
-    normed = np.maximum(0,np.minimum(orig,1000))
+    res = np.roll(np.roll(res, xcent, axis=0), ycent, axis=1)
+    res = res[raBufferPix:-raBufferPix, decBufferPix:-decBufferPix]
+
+    normed = np.minimum(np.maximum(0, orig), 100)
     corr = correlate(normed, res, mode='same')
     mm = np.unravel_index(corr.argmax(), corr.shape)
     deltax = mm[1] - corr.shape[1] // 2
     deltay = mm[0] - corr.shape[0] // 2
-    return totRA + deltax * 0.263 / 60 / 60, totDEC + deltay * 0.263 / 60 / 60
+
+    deltaRA = guessRA + deltax * PIX2DEG
+    deltaDEC = guessDEC + deltay * PIX2DEG
+
+    return deltaRA, deltaDEC
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -103,13 +111,14 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     if args.surv != 'core':
+        # TODO: handle non-core
         raise NotImplementedError()
 
     table = Table(names=['seq', 'exp', 'ccd', 'ra', 'dec'], dtype=('i4', 'i4', 'i4', 'f4', 'f4'))
     surv = Survey.getCoreSurvey()
     for expInd in range(1,len(surv.sequences[args.seq])):
-        for ccdInd in range(61):
-            totRA, totDEC = fastCorrect(surv, args.seq, expInd, ccdInd)
-            table.add_row([int(surv.sequences[args.seq].seconds), expInd, ccdInd, totRA, totDEC])
+        for ccdInd in range(NUMCCDS):
+            deltaRA, deltaDEC = fastCorrect(surv, args.seq, expInd, ccdInd)
+            table.add_row([int(surv.sequences[args.seq].seconds), expInd, ccdInd, deltaRA, deltaDEC])
     
     table.write(f'{registration_dir}corrections_{args.surv}_{args.seq}.csv', overwrite=True)

@@ -13,23 +13,23 @@ for seq in surv.sequences: # skip already successful
     
     if seq.band == 'r':
         phots = 'phot_bp_mean_flux,phot_bp_mean_flux_error'
-        cond = 'phot_bp_mean_flux > 3000'
+        cond = 'phot_bp_mean_flux > 500'
     else:
         phots = 'phot_rp_mean_flux,phot_rp_mean_flux_error'
-        cond = 'phot_rp_mean_flux > 3000'
+        cond = 'phot_rp_mean_flux > 500'
     
     q1 = f"""SELECT source_id,ra,dec,{phots}
            FROM gaiadr2.gaia_source 
            WHERE 1=CONTAINS(POINT('ICRS',ra,dec), CIRCLE('ICRS',{ra},{dec},{rad})) 
            AND {cond}"""
-    fname1 = os.path.join(registration_dir, f'seq_{seconds}_1.csv')
+    fname1 = os.path.join(registration_dir, f'seq_{seconds}_500_1.csv')
 
     ra = ra + 0.7
     q2 = f"""SELECT source_id,ra,dec,{phots}
            FROM gaiadr2.gaia_source 
            WHERE 1=CONTAINS(POINT('ICRS',ra,dec), CIRCLE('ICRS',{ra},{dec},{rad})) 
            AND {cond}"""
-    fname2 = os.path.join(registration_dir, f'seq_{seconds}_2.csv')
+    fname2 = os.path.join(registration_dir, f'seq_{seconds}_500_2.csv')
 
     if not os.path.exists(fname1):
         print(f'Trying: {fname1}')
