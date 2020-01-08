@@ -208,7 +208,7 @@ class CCD(Box):
 class Registration:
     def __init__(self, seconds):
         self.key = int(float(seconds))
-        self.fname = os.path.join(registration_dir, f'merged_{self.key}.csv')
+        self.fname = os.path.join(registration_dir, f'merged_{self.key}_500.csv') # 500 query mean flux cutoff
 
     def getSourcesIn(self, polygon):
         if isinstance(polygon, Box):

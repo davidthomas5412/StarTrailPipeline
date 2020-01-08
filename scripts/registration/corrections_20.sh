@@ -1,4 +1,3 @@
-python /gpfs/slac/kipac/fs1/u/dthomas5/science/StarTrailPipeline/scripts/registration/calculateCorrections.py -seq 0
 python /gpfs/slac/kipac/fs1/u/dthomas5/science/StarTrailPipeline/scripts/registration/calculateCorrections.py -seq 1
 python /gpfs/slac/kipac/fs1/u/dthomas5/science/StarTrailPipeline/scripts/registration/calculateCorrections.py -seq 2
 python /gpfs/slac/kipac/fs1/u/dthomas5/science/StarTrailPipeline/scripts/registration/calculateCorrections.py -seq 3

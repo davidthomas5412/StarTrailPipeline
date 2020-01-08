@@ -1,5 +1,6 @@
 import argparse
 import numpy as np
+from tqdm import tqdm
 from numpy.fft import fft2, ifft2
 from startrail.api import Survey
 from startrail.paths import registration_dir
@@ -9,7 +10,7 @@ from astropy.wcs import WCS
 from astropy.table import Table
 
 PIX2DEG = 0.263 / 60 / 60
-NUMCCDS = 61
+NUMCCDS = 61 # TODO: change back
 
 def conv(a,b):
     return np.real(ifft2(fft2(b) * fft2(a)))
@@ -47,6 +48,7 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     guessDEC = 0
 
     h = deepcopy(seq.exposures[0].ccds[ccdInd].header)
+    sky = h['AVSKY'] if 'AVSKY' in h else np.median(ccd.image)
     for key in ['CRVAL1', 'CENRA1', 'COR1RA1', 'COR2RA1', 'COR3RA1', 'COR4RA1']:
         h[key] += guessRA
     
@@ -71,7 +73,7 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     wcs = WCS(h)
     pix = wcs.all_world2pix(np.array([clip[:,1], clip[:,2]]).T, 1)
 
-    orig = ccd.image - ccd.header['AVSKY']
+    orig = ccd.image - sky
     n,m = orig.shape
     ext = np.zeros((n+2*raBufferPix, m+2*decBufferPix))
     base = np.zeros((n+2*raBufferPix, m+2*decBufferPix))
@@ -116,8 +118,9 @@ if __name__ == '__main__':
 
     table = Table(names=['seq', 'exp', 'ccd', 'ra', 'dec'], dtype=('i4', 'i4', 'i4', 'f4', 'f4'))
     surv = Survey.getCoreSurvey()
-    for expInd in range(1,len(surv.sequences[args.seq])):
-        for ccdInd in range(NUMCCDS):
+    numExp = len(surv.sequences[args.seq])
+    for expInd in tqdm(range(1, numExp)):
+        for ccdInd in tqdm(range(NUMCCDS)):
             deltaRA, deltaDEC = fastCorrect(surv, args.seq, expInd, ccdInd)
             table.add_row([int(surv.sequences[args.seq].seconds), expInd, ccdInd, deltaRA, deltaDEC])
     

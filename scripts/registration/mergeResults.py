@@ -6,7 +6,8 @@ from startrail.paths import registration_dir
 surv = Survey.getCoreSurvey()
 
 for i,seq in enumerate(surv.sequences):
-	pair = [x for x in os.listdir(registration_dir) if str(seq.seconds) in x]
+	# merge the results with 500 GAIA mean flux cutoff
+	pair = [x for x in os.listdir(registration_dir) if (str(seq.seconds) in x) and ('_500_' in x)]
 	if len(pair) != 2:
 		raise RuntimeError('Cannot find pair!')
 	
@@ -22,6 +23,6 @@ for i,seq in enumerate(surv.sequences):
 
 	# merged = np.unique(np.vstack([data1[mask1], data2[mask2]]), axis=0)
 	merged = np.unique(np.vstack([data1, data2]), axis=0)
-	f = os.path.join(registration_dir, f'merged_{int(seq.seconds)}.csv')
+	f = os.path.join(registration_dir, f'merged_{int(seq.seconds)}_500.csv')
 	np.savetxt(f, merged, header=header, delimiter=',')
 	print(f'{i}/{len(surv.sequences)}')
