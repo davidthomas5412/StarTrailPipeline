@@ -155,8 +155,19 @@ class Exposure:
         return any((ccd.contains(x, y) for ccd in self.ccds))
 
 class StarTrailExposure(Exposure):
-    def __init__(self, fname, tracking, exptime, timeObs, band, centRA, centDEC):
+    def __init__(self, fname, tracking, exptime, timeObs, band, centRA, centDEC, correction=None):
         super(StarTrailExposure, self).__init__(fname, tracking, exptime, timeObs, band, centRA, centDEC)
+        self.corrections = corrections
+
+        @lazy_property
+    def header(self):
+        return fits.open(self.fname)[0].header
+
+    @lazy_property
+    def ccds(self):
+        hdus = fits.open(self.fname)
+        return [CCD(hdu) for hdu in hdus[1:]]
+
 
 class StaticExposure(Exposure):
     def __init__(self, fname, tracking, exptime, timeObs, band, centRA, centDEC):

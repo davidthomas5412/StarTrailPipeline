@@ -11,6 +11,25 @@ from astropy.table import Table
 
 PIX2DEG = 0.263 / 60 / 60
 NUMCCDS = 61 # TODO: change back
+GUESS_RA_MAP = {
+    (42,4): 0.784,
+    (43,2): 0.39,
+    (43,3): 0.57,
+    (43,4): 0.75,
+    (59,1): 0.21,
+    (59,2): 0.37,
+    (59,3): 0.56,
+    (63,3): 0.62,
+    (64,1): 0.30,
+    (64,2): 0.50,
+    (64,3): 0.67,
+    (68,1): 0.22,
+    (68,2): 0.4,
+    (68,3): 0.56,
+    (71,1): 0.21,
+    (71,2): 0.39,
+    (71,3): 0.57,
+}
 
 def conv(a,b):
     return np.real(ifft2(fft2(b) * fft2(a)))
@@ -21,30 +40,7 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     ccd = exp.ccds[ccdInd]
     reg = np.loadtxt(f'{registration_dir}merged_{int(seq.seconds)}.csv', skiprows=1, delimiter=',')
 
-    if seqInd == 1:
-        expToGuess = {
-            1: 0.1693115234375+0.35,
-            2: 2 * 0.1693115234375+0.35,
-        }
-    elif seqInd == 3:
-        expToGuess = {
-            1: 0.1693115234375+0.50,
-        }
-    elif seqInd == 31:
-        expToGuess = {
-            1: 0.1693115234375 + 0.4,
-            2: 2 * 0.1693115234375+ 0.4,
-            3: 3 * 0.1693115234375+ 0.4,
-            4: 4 * 0.1693115234375+ 0.4
-        }  
-    else:
-        expToGuess = {
-            1: 0.1693115234375,
-            2: 2 * 0.1693115234375,
-            3: 3 * 0.1693115234375,
-            4: 4 * 0.1693115234375
-        }
-    guessRA = expToGuess[expInd]
+    guessRA = GUESS_RA_MAP[(seqInd,expInd)]
     guessDEC = 0
 
     h = deepcopy(seq.exposures[0].ccds[ccdInd].header)
@@ -68,7 +64,7 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     mask = (reg[:,1] > minRA - raBuffer) * (reg[:,1] < maxRA + raBuffer) *\
         (reg[:,2] > minDec - decBuffer) * (reg[:,2] < maxDec + decBuffer)
     clip = reg[mask]
-    clip = clip[np.argsort(clip[:,3])][-20:] # 20 brightest
+    clip = clip[np.argsort(clip[:,3])][-100:] # 100 brightest
 
     wcs = WCS(h)
     pix = wcs.all_world2pix(np.array([clip[:,1], clip[:,2]]).T, 1)
@@ -93,9 +89,8 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
 
     res = conv(base, kernel)
     res = np.roll(np.roll(res, xcent, axis=0), ycent, axis=1)
-    res = res[raBufferPix:-raBufferPix, decBufferPix:-decBufferPix]
 
-    normed = np.minimum(np.maximum(0, orig), 100)
+    normed = np.minimum(np.maximum(0, ext), 10)
     corr = correlate(normed, res, mode='same')
     mm = np.unravel_index(corr.argmax(), corr.shape)
     deltax = mm[1] - corr.shape[1] // 2
@@ -107,21 +102,10 @@ def fastCorrect(surv, seqInd, expInd, ccdInd):
     return deltaRA, deltaDEC
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-seq", help="sequence", type=int)
-    parser.add_argument("-surv", help="survey", type=str, default='core')
-
-    args = parser.parse_args()
-    if args.surv != 'core':
-        # TODO: handle non-core
-        raise NotImplementedError()
-
     table = Table(names=['seq', 'exp', 'ccd', 'ra', 'dec'], dtype=('i4', 'i4', 'i4', 'f4', 'f4'))
     surv = Survey.getCoreSurvey()
-    numExp = len(surv.sequences[args.seq])
-    for expInd in tqdm(range(1, numExp)):
+    for seqInd, expInd in GUESS_RA_MAP:
         for ccdInd in tqdm(range(NUMCCDS)):
-            deltaRA, deltaDEC = fastCorrect(surv, args.seq, expInd, ccdInd)
-            table.add_row([int(surv.sequences[args.seq].seconds), expInd, ccdInd, deltaRA, deltaDEC])
-    
-    table.write(f'{registration_dir}corrections_{args.surv}_{args.seq}.csv', overwrite=True)
+            deltaRA, deltaDEC = fastCorrect(surv, seqInd, expInd, ccdInd)
+            table.add_row([seqInd, expInd, ccdInd, deltaRA, deltaDEC])    
+    table.write(f'{registration_dir}corrections_core_sys.csv', overwrite=True)
