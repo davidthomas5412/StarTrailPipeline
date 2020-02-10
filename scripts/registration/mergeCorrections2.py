@@ -26,4 +26,4 @@ if __name__ == '__main__':
                 t['ra'][idx] = row['ra']
                 t['dec'][idx] = row['dec']
     t.sort(['seq', 'exp', 'ccd'])
-    t.write(f'{registration_dir}corrections.csv', overwrite=True)
+    t.write(f'{registration_dir}adjustments.csv', overwrite=True)

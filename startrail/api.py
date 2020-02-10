@@ -1,11 +1,13 @@
 from math import sqrt
 import numpy as np
+from copy import deepcopy
 from os.path import join
 from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
 from matplotlib.path import Path
-from startrail.paths import data_dir, registration_dir, summary_table, adjust_table
+from startrail import paths
+import matplotlib.pyplot as plt
 
 def time_to_seconds(time):
     h = int(time[:2])
@@ -28,9 +30,9 @@ def lazy_property(fn):
     return _lazy_property
 
 class Survey:
-    valid_table = Table.read(valid_table)
-    adjust_table = Table.read(adjust_table)
-    data = Table.read(summary_table)
+    valid_table = Table.read(paths.valid_table)
+    adjust_table = Table.read(paths.adjust_table)
+    data = Table.read(paths.summary_table)
     data['seconds'] = [time_to_seconds(x) for x in data['TIME-OBS']]
     data.sort('seconds')
     science_mask = np.array(['2019-07' in x for x in data['DATE-OBS']])
@@ -49,12 +51,13 @@ class Survey:
 
     def __init__(self, name, data):
         sequences = []
-        for seq_ind, row in enumerate(data):
+        for row in data:
             inp = [row[x] for x in ('fname', 'EXPTIME', 'TIME-OBS', 'seconds', 'BAND', 'CENTRA', 'CENTDEC')]
-            inp[0] =  join(data_dir, inp[0])
+            inp[0] =  join(paths.data_dir, inp[0])
             if row['TELSTAT'] == 'Track':
                 exp_ind = 0
                 exp = StaticExposure(exp_ind, *inp)
+                seq_ind = len(sequences)
                 seq = Sequence(seq_ind, exp)
                 sequences.append(seq)
                 
@@ -73,13 +76,13 @@ class Survey:
 
     @staticmethod
     def valid_subtable(seq_ind, exp_ind):
-        sub = valid_table[(valid_table['seq'] == seq_ind) * (valid_table['exp'] == exp_ind)]
-        return sub[['ccd_ind', 'valid']]
+        sub = Survey.valid_table[(Survey.valid_table['seq'] == seq_ind) * (Survey.valid_table['exp'] == exp_ind)]
+        return sub[['ccd', 'valid']]
 
     @staticmethod
     def adjust_subtable(seq_ind, exp_ind):
-        sub = adjust_table[(adjust_table['seq'] == seq_ind) * (adjust_table['exp'] == exp_ind)]
-        return sub[['ccd_ind', 'ra', 'dec']]
+        sub = Survey.adjust_table[(Survey.adjust_table['seq'] == seq_ind) * (Survey.adjust_table['exp'] == exp_ind)]
+        return sub
 
     def contains(self, x, y):
         for seq in self.sequences:
@@ -125,7 +128,7 @@ class Sequence:
         self.band = keyExposure.band
         self.ra = keyExposure.ra
         self.dec = keyExposure.dec
-        self.registration = Registration(self.seconds)
+        self.registration = Registration(self.index)
 
     def add_exposure(self, exposure):
         self.exposures.append(exposure)
@@ -170,7 +173,7 @@ class Exposure:
     @lazy_property
     def ccds(self):
         hdus = fits.open(self.fname)
-        return [CCD(i,hdu) for i,hdu in enumerate(hdus[1:])]
+        return [CCD(i,hdu,True) for i,hdu in enumerate(hdus[1:])]
 
     def contains(self, x, y):
         cutoff = 1.2
@@ -181,73 +184,74 @@ class Exposure:
         return any((ccd.contains(x, y) for ccd in self.ccds))
 
 class StarTrailExposure(Exposure):
+    MID_CCD = 30
 
     def __init__(self, index, fname, tracking, exptime, time_obs, band, ra, dec, adjust_table=None, valid_table=None):
+        self.adjust_table = adjust_table
+        self.valid_table = valid_table
         if adjust_table and len(adjust_table) > 0:
-            self.adjust_table.sort('ccd_ind')
-            ra, dec = StarTrailExposure.adjust_center(ra, dec)
+            self.adjust_table.sort('ccd')
+            idx = np.where(self.adjust_table['ccd'] == StarTrailExposure.MID_CCD)[0][0]
+            row = self.adjust_table[idx]
+            ra = row['CENTRA'] + row['ra'] 
+            dec = row['CENTDEC'] + row['dec'] 
         super(StarTrailExposure, self).__init__(index, fname, tracking, exptime, time_obs, band, ra, dec)
         if valid_table:
-            self.valid_table = valid_table
-            self.valid_table.sort('ccd_ind')
+            self.valid_table.sort('ccd')
 
     @lazy_property
     def header(self):
-        return StarTrailExposure.adjust_header(fits.open(self.fname)[0].header)
+        header = fits.open(self.fname)[0].header
+        
+        if self.adjust_table:
+            idx = np.where(self.adjust_table['ccd'] == StarTrailExposure.MID_CCD)[0][0]
+            row = self.adjust_table[idx]
+            d_ra = row['ra'] 
+            d_dec = row['dec'] 
+            for key in ['CENTRA', 'CORN1RA', 'CORN2RA', 'CORN3RA', 'CORN4RA']:
+                header[key] = row[key] + d_ra
+            for key in ['CENTDEC', 'CORN1DEC', 'CORN2DEC', 'CORN3DEC', 'CORN4DEC']:
+                header[key] = row[key] + d_dec
+        return header
 
     @lazy_property
-    def ccds(self):
+    def __hdus(self):
         hdus = fits.open(self.fname)
-        hdus = StarTrailExposure.adjust_ccds(hdus)
-        return [CCD(i,hdu,valid) for i,hdu,valid in zip(range(61), hdus[1:], self.valid_table['valid'])]
+        
+        if self.adjust_table:
+            for ccd_ind, hdu in enumerate(hdus[1:]):
+                idx = np.where(self.adjust_table['ccd'] == ccd_ind)[0][0]
+                row = self.adjust_table[idx]
+                d_ra = row['ra']
+                d_dec = row['dec']
+                for key in ['CRVAL1', 'CENRA1', 'COR1RA1', 'COR2RA1', 'COR3RA1', 'COR4RA1']:
+                    hdu.header[key] = row[key] + d_ra
+                for key in ['CRVAL2', 'CENDEC1', 'COR1DEC1', 'COR2DEC1', 'COR3DEC1', 'COR4DEC1']:
+                    hdu.header[key] = row[key] + d_dec
+                for key in ['PV1_7','PV2_8','PV2_9','CD1_1','PV2_0','PV2_1','PV2_2','PV2_3',\
+                'PV2_4','PV2_5','PV2_6','PV2_7','PV1_6','PV2_10','PV1_4','PV1_3','PV1_2','PV1_1',\
+                'PV1_0','PV1_9','PV1_8','CD1_2','PV1_5','CD2_1','CD2_2','PV1_10']:
+                    hdu.header[key] = row[key]
+
+        return hdus
+
+
+    @lazy_property
+    def ccds(self, onlyValid=False):
+        if self.valid_table:
+            return [CCD(i,hdu,valid) for i,hdu,valid in zip(range(61), self.__hdus[1:], self.valid_table['valid'])]
+        return [CCD(i,hdu,True) for i,hdu in zip(range(61), self.__hdus[1:])]
+
 
     @lazy_property
     def valid_ccds(self):
-        hdus = fits.open(self.fname)
-        hdus = StarTrailExposure.adjust_ccds(hdus)
-        return [CCD(i,hdu,valid) for i,hdu,valid in zip(range(61), hdus[1:], self.valid_table['valid']) if valid]
-
-    @staticmethod
-    def adjust_ccds(hdus):
-        if not self.adjust_table:
-            return hdus 
-
-        for ccd_ind, hdu in enumerate(hdus[1:]):
-            row = self.adjust_table[self.adjust_table['ccd_ind'] == ccd_ind]
-            d_ra = row['ra']
-            d_dec = row['dec']
-            for key in ['CRVAL1', 'CENRA1', 'COR1RA1', 'COR2RA1', 'COR3RA1', 'COR4RA1']:
-                hdu[key] += d_ra
-    
-            for key in ['CRVAL2', 'CENDEC1', 'COR1DEC1', 'COR2DEC1', 'COR3DEC1', 'COR4DEC1']:
-                hdu[key] += d_dec
-        return hdus
-
-    @staticmethod
-    def adjust_center(ra, dec):
-        row = self.adjust_table[self.adjust_table['ccd_ind'] == 30]
-        ra += row['ra'] 
-        dec += row['dec'] 
-        return ra, dec
-
-    @staticmethod
-    def adjust_header(header):
-        if not self.adjust_table:
-            return header
-            
-        row = self.adjust_table[self.adjust_table['ccd_ind'] == 30]
-        d_ra = row['ra'] 
-        d_dec = row['dec'] 
-        for key in ['CENTRA', 'CORN1RA', 'CORN2RA', 'CORN3RA', 'CORN4RA']:
-            header[key] += d_ra
-        for key in ['CENTDEC', 'CORN1DEC', 'CORN2DEC', 'CORN3DEC', 'CORN4DEC']:
-            header[key] += d_dec
-        return header
-
+        if self.valid_table:
+            return [CCD(i,hdu,valid) for i,hdu,valid in zip(range(61), self.__hdus[1:], self.valid_table['valid']) if valid]
+        return [CCD(i,hdu,True) for i,hdu in zip(range(61), self.__hdus[1:])]
 
 class StaticExposure(Exposure):
-    def __init__(self, index, fname, tracking, exptime, timeObs, band, centRA, centDEC):
-        super(StaticExposure, self).__init__(index, fname, tracking, exptime, timeObs, band, centRA, centDEC)
+    def __init__(self, index, fname, tracking, exptime, time_obs, band, ra, dec):
+        super(StaticExposure, self).__init__(index, fname, tracking, exptime, time_obs, band, ra, dec)
 
 class Box:
     def __init__(self, corners_x, corners_y):
@@ -261,18 +265,18 @@ class Box:
         return self.polygon.contains_point((x,y))
 
 class CCD(Box):
-    def __init__(self, ccd_ind, hdu, valid):
+    def __init__(self, index, hdu, valid):
         corners_x = [hdu.header['COR{}RA1'.format(i)] for i in [1,2,4,3]]
-        corners_x = [hdu.header['COR{}DEC1'.format(i)] for i in [1,2,4,3]]
-        super(CCD, self).__init__(corners_x, corners_x)
-        self.ccd_ind = ccd_ind
+        corners_y = [hdu.header['COR{}DEC1'.format(i)] for i in [1,2,4,3]]
+        super(CCD, self).__init__(corners_x, corners_y)
+        self.index = index
         self.wcs = None
         self.hdu = hdu
         self.valid = valid
 
     @lazy_property
     def image(self):
-        return self.hdu.data.T
+        return self.hdu.data
 
     @lazy_property
     def header(self):
@@ -295,26 +299,56 @@ class CCD(Box):
         return self.wcs.all_world2pix(np.array([ra, dec]).T, 1)
 
 class Registration:
-    def __init__(self, seconds):
-        self.key = int(float(seconds))
-        self.fname = join(registration_dir, f'merged_{self.key}_500.csv') # 500 query mean flux cutoff
+    def __init__(self, index):
+        self.full_catalog_file = join(paths.registration_dir, f'registration_{index}_500.csv')
+        self.sparse_catalog_file = join(paths.registration_dir, f'registration_{index}_3000.csv')
 
-    def get_sources_in(self, polygon):
+    def get_sources_in(self, polygon, cutoff=3000):
         if isinstance(polygon, Box):
             polygon = polygon.polygon
-        mask = [polygon.contains_point((x[1], x[2])) for x in self.data]
-        return self.data[mask], self.columns
+        if cutoff >= 3000:
+            sub = self.sparse_catalog[[self.sparse_catalog.columns[3] >= cutoff]]
+        else:
+            sub = self.full_catalog[[self.full_catalog.columns[3] >= cutoff]]
+        mask = [polygon.contains_point((x[1], x[2])) for x in sub]
+        return sub[[mask]]
 
-    @lazyProperty
-    def data(self):
-        return np.loadtxt(self.fname, delimiter=',')
+    def get_sources_around(self, polygon, cutoff=3000):
+        if isinstance(polygon, Box):
+            polygon = polygon.polygon
+        if cutoff >= 3000:
+            sub = self.sparse_catalog[[self.sparse_catalog.columns[3] >= cutoff]]
+        else:
+            sub = self.full_catalog[[self.full_catalog.columns[3] >= cutoff]]
+
+        cpy = deepcopy(polygon)
+        # for stars that trail in
+        sidereal_buffer = 0.0625
+        cpy.vertices[:2,0] -= sidereal_buffer 
+
+        # for trails right on the edge
+        edge_buffer = 0.005
+        cpy.vertices[1:3,1] -= edge_buffer
+        cpy.vertices[0,1] += edge_buffer
+        cpy.vertices[3,1] += edge_buffer
+
+        mask = [cpy.contains_point((x[1], x[2])) for x in sub]
+        return sub[[mask]]
+
+    @lazy_property
+    def full_catalog(self):
+        '''
+        gaia mean flux > 500
+        '''
+        return Table.read(self.full_catalog_file)
+
+    @lazy_property
+    def sparse_catalog(self):
+        '''
+        gaia mean flux > 3000
+        '''
+        return Table.read(self.sparse_catalog_file)
     
-    @lazyProperty
-    def columns(self):
-        with open(self.fname, 'r') as r:
-            columns = r.readline()[2:].split(',')
-        return columns
-
 class Trail:
     def __init__(self, gaiaId, ra, dec, flux, img, start, end):
         self.id = gaiaId
@@ -330,4 +364,3 @@ class Trail:
         ax.set_title(f'CCD: {ccd_ind}')
         ax.imshow(self.image.T, vmin=vmin, vmax=vmax, cmap=cmap, origin=origin)
         return fig, ax
-
