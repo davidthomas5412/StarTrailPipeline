@@ -29,6 +29,7 @@ def lazy_property(fn):
         return getattr(self, attr_name)
     return _lazy_property
 
+# singleton
 class Survey:
     valid_table = Table.read(paths.valid_table)
     adjust_table = Table.read(paths.adjust_table)
@@ -36,43 +37,38 @@ class Survey:
     data['seconds'] = [time_to_seconds(x) for x in data['TIME-OBS']]
     data.sort('seconds')
     science_mask = np.array(['2019-07' in x for x in data['DATE-OBS']])
-    tracking_mask = data['TELSTAT'] == 'Track'
-    extra_mask = np.zeros(len(data), dtype='bool')
-    extra_mask[395:] = True
-    target_mask = np.zeros(len(data), dtype='bool')
+    _instance = None
 
-    # MAXI J1820+070
-    for i in range(390,395):
-        target_mask[i] = True
+    def __new__(cls):
+        if cls._instance is None:
+            print('Creating Survey singleton.')
+            cls._instance = super(Survey, cls).__new__(cls)
+            mask = Survey.science_mask
+            data = Survey.data[mask]
+            sequences = []
+            for row in data:
+                inp = [row[x] for x in ('fname', 'TELSTAT', 'EXPTIME', 'seconds', 'BAND', 'CENTRA', 'CENTDEC')]
+                inp[0] =  join(paths.data_dir, inp[0])
+                if row['TELSTAT'] == 'Track':
+                    exp_ind = 0
+                    exp = StaticExposure(exp_ind, *inp)
+                    seq_ind = len(sequences)
+                    seq = Sequence(seq_ind, exp)
+                    sequences.append(seq)
+                    
+                else:
+                    adj_sub = Survey.adjust_subtable(seq_ind, exp_ind)
+                    val_sub = Survey.valid_subtable(seq_ind, exp_ind)
+                    exp = StarTrailExposure(exp_ind, *inp, adjust_table=adj_sub, valid_table=val_sub)
+                    seq.add_exposure(exp)
+                exp_ind += 1
 
-    # V4641 Sgr
-    for i in range(370,375):
-        target_mask[i] = True
+            cls._instance.sequences = sequences
+            cls._instance.seconds_to_seq = dict()
+            for seq in cls._instance.sequences:
+                cls._instance.seconds_to_seq[int(seq.seconds)] = seq
 
-    def __init__(self, name, data):
-        sequences = []
-        for row in data:
-            inp = [row[x] for x in ('fname', 'EXPTIME', 'TIME-OBS', 'seconds', 'BAND', 'CENTRA', 'CENTDEC')]
-            inp[0] =  join(paths.data_dir, inp[0])
-            if row['TELSTAT'] == 'Track':
-                exp_ind = 0
-                exp = StaticExposure(exp_ind, *inp)
-                seq_ind = len(sequences)
-                seq = Sequence(seq_ind, exp)
-                sequences.append(seq)
-                
-            else:
-                adj_sub = Survey.adjust_subtable(seq_ind, exp_ind)
-                val_sub = Survey.valid_subtable(seq_ind, exp_ind)
-                exp = StarTrailExposure(exp_ind, *inp, adjust_table=adj_sub, valid_table=val_sub)
-                seq.add_exposure(exp)
-            exp_ind += 1
-
-        self.name = name
-        self.sequences = sequences
-        self.seconds_to_seq = dict()
-        for seq in self.sequences:
-            self.seconds_to_seq[int(seq.seconds)] = seq
+        return cls._instance
 
     @staticmethod
     def valid_subtable(seq_ind, exp_ind):
@@ -85,46 +81,19 @@ class Survey:
         return sub
 
     def contains(self, x, y):
-        for seq in self.sequences:
+        for seq in Survey._instance.sequences:
             if seq.contains(x, y):
                 return True
         return False
 
-    def find_seq(self, seconds):
-        sec = int(float(seconds)) # accepts int, float, or str
-        return self.seconds_to_seq[sec]
-
     def __len__(self):
-        return len(self.sequences)
-
-    @staticmethod
-    def get_core_survey():
-        mask = Survey.science_mask * ~Survey.extra_mask * ~Survey.target_mask
-        return Survey('core', Survey.data[mask])
-
-    @staticmethod
-    def get_target_survey():
-        # mask = Survey.target_mask
-        # return Survey('target', Survey.data[mask])
-        raise NotImplementedError()
-
-    @staticmethod
-    def get_engineering_survey():
-        # mask = ~Survey.science_mask
-        # return Survey('engineering', Survey.data[mask])
-        raise NotImplementedError()
-
-    @staticmethod
-    def get_auxiliary_survey():
-        # mask = Survey.extra_mask
-        # return Survey('auxiliary', Survey.data[mask])
-        raise NotImplementedError()
+        return len(Survey._instance.sequences)
 
 class Sequence:
     def __init__(self, index, keyExposure):
         self.index = index
         self.exposures = [keyExposure]
-        self.seconds = keyExposure.seconds # we use this as unique identifier
+        self.seconds = keyExposure.seconds
         self.band = keyExposure.band
         self.ra = keyExposure.ra
         self.dec = keyExposure.dec
@@ -174,6 +143,15 @@ class Exposure:
     def ccds(self):
         hdus = fits.open(self.fname)
         return [CCD(i,hdu,True) for i,hdu in enumerate(hdus[1:])]
+
+    @lazy_property
+    def dqmasks(self):
+        hdus = fits.open(self.fname.replace('oki', 'ood'))
+        # Doesn't match up with https://www.noao.edu/meetings/decam/media/DECam_Data_Handbook.pdf
+        # 1 = bad pixel
+        # 3,4 = something to do with saturation
+        # 5 = cosmic ray
+        return [hdu.data for i,hdu in enumerate(hdus[1:])] 
 
     def contains(self, x, y):
         cutoff = 1.2

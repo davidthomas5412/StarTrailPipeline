@@ -9,7 +9,6 @@ from startrail.api import Survey
 from astropy.wcs import WCS
 from scipy.signal import correlate
 
-
 surv = Survey.get_core_survey()
 t = Table.read(adjust_table)
 
@@ -17,8 +16,13 @@ PIX2DEG = 7.285e-5
 NUMCCDS = 61
 
 def guess(seq_ind, exp_ind):
-    ind = np.where((t['seq'] == seq_ind) * (t['exp'] == exp_ind) * (t['ccd'] == 30))[0][0]
-    return t[ind]['ra']
+    exp_map = {
+        1: 0.22175029665231705,
+        2: 0.3976368308067322,
+        3: 0.5731573700904846,
+        4: 0.7405745387077332,
+    }
+    return exp_map[exp_ind]
 
 def conv(a,b):
     return np.real(ifft2(fft2(b) * fft2(a)))
@@ -27,7 +31,7 @@ def fast_correct(seqInd, expInd, ccdInd):
     seq = surv.sequences[seqInd]
     exp = seq.exposures[expInd]
     ccd = exp.ccds[ccdInd]
-    reg = np.loadtxt(f'{registration_dir}/merged_{int(seq.seconds)}.csv', skiprows=1, delimiter=',')
+    reg = Table.read(f'{registration_dir}/registration_{int(seq.index)}_3000.csv')
 
     guessRA = guess(seqInd,expInd)
     guessDEC = 0
@@ -50,13 +54,13 @@ def fast_correct(seqInd, expInd, ccdInd):
     maxDec = max([h[x] for x in ['COR{}DEC1'.format(y) for y in range(1,5)]])
     minDec = min([h[x] for x in ['COR{}DEC1'.format(y) for y in range(1,5)]])
 
-    mask = (reg[:,1] > minRA - raBuffer) * (reg[:,1] < maxRA + raBuffer) *\
-        (reg[:,2] > minDec - decBuffer) * (reg[:,2] < maxDec + decBuffer)
-    clip = reg[mask]
-    clip = clip[np.argsort(clip[:,3])][-100:] # 100 brightest
+    mask = (reg['ra'] > minRA - raBuffer) * (reg['ra'] < maxRA + raBuffer) *\
+        (reg['dec'] > minDec - decBuffer) * (reg['dec'] < maxDec + decBuffer)
+    clip = reg[[mask]]
+    clip = clip[[np.argsort(clip[clip.keys()[3]])]][-100:] # 100 brightest
 
     wcs = WCS(h)
-    pix = wcs.all_world2pix(np.array([clip[:,1], clip[:,2]]).T, 1)
+    pix = wcs.all_world2pix(np.array([clip['ra'], clip['dec']]).T, 1)
 
     orig = ccd.image - sky
     n,m = orig.shape
